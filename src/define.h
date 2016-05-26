@@ -165,7 +165,7 @@ static SCCP_LINE unsigned long long __bswap_64(unsigned long long x)
 #define sccp_globals_unlock(x)			pbx_mutex_unlock(&sccp_globals->x)
 #define sccp_globals_trylock(x)			pbx_mutex_trylock(&sccp_globals->x)
 
-#define DEV_ID_LOG(x) (x && !sccp_strlen_zero(x->id)) ? x->id : "SCCP"
+#define DEV_ID_LOG(x) (x && !isPointerDead(x) && !sccp_strlen_zero(x->id)) ? x->id : "SCCP"
 
 #define PTR_TYPE_CMP(_type,_ptr) 					\
 ({									\
