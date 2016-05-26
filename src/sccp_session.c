@@ -1019,7 +1019,7 @@ int sccp_session_send2(constSessionPtr session, sccp_msg_t * msg)
 	if (msgid == KeepAliveAckMessage || msgid == RegisterAckMessage || msgid == UnregisterAckMessage) {
 		msg->header.lel_protocolVer = 0;
 	} else if (s->device && s->device->protocol) {
-		msg->header.lel_protocolVer = htolel(s->device->protocol->version);
+		msg->header.lel_protocolVer = s->device->protocol->version < 10 ? 0 : htolel(s->device->protocol->version);
 	} else {
 		msg->header.lel_protocolVer = 0;
 	}
