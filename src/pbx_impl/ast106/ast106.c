@@ -224,6 +224,7 @@ static int sccp_wrapper_asterisk16_devicestate(void *data)
 			break;
 
 		case SCCP_CHANNELSTATE_RINGOUT:
+		case SCCP_CHANNELSTATE_RINGOUT_CALLINFO:
 #ifdef CS_EXPERIMENTAL
 			res = AST_DEVICE_RINGINUSE;
 			break;
@@ -558,6 +559,7 @@ static int sccp_wrapper_asterisk16_indicate(PBX_CHANNEL_TYPE * ast, int ind, con
 					}
 				}
 				iPbx.set_callstate(c, AST_STATE_RING);
+				sccp_indicate(d, c, SCCP_CHANNELSTATE_RINGOUT_CALLINFO);
 			}
 			break;
 		case AST_CONTROL_BUSY:

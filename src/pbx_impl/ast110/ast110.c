@@ -536,10 +536,7 @@ static int sccp_wrapper_asterisk110_indicate(PBX_CHANNEL_TYPE * ast, int ind, co
 				// Allow signalling of RINGOUT only on outbound calls.
 				// Otherwise, there are some issues with late arrival of ringing
 				// indications on ISDN calls (chan_lcr, chan_dahdi) (-DD).
-
-				// send PROCEED now, prepare for AST_CONTROL_CONNECTED_LINE
-				// which will push the actual RINGOUT indication
-				sccp_indicate(d, c, SCCP_CHANNELSTATE_PROCEED);
+				sccp_indicate(d, c, SCCP_CHANNELSTATE_RINGOUT);
 				if (d->earlyrtp == SCCP_EARLYRTP_IMMEDIATE) {
 					/* 
 					 * Redial button isnt't working properly in immediate mode, because the
@@ -664,11 +661,8 @@ static int sccp_wrapper_asterisk110_indicate(PBX_CHANNEL_TYPE * ast, int ind, co
 
 		case AST_CONTROL_CONNECTED_LINE:
 			sccp_asterisk_connectedline(c, data, datalen);
-			if (	SKINNY_CALLTYPE_OUTBOUND == c->calltype &&
-				SCCP_CHANNELSTATE_RINGOUT == c->previousChannelState &&
-				SCCP_CHANNELSTATE_PROCEED == c->state
-			) {
-				sccp_indicate(d, c, SCCP_CHANNELSTATE_RINGOUT);
+			if (SKINNY_CALLTYPE_OUTBOUND == c->calltype && SCCP_CHANNELSTATE_RINGOUT == c->state) {
+				sccp_indicate(d, c, SCCP_CHANNELSTATE_RINGOUT_CALLINFO);
 			}
 			res = 0;
 			break;

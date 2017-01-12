@@ -156,14 +156,9 @@ void __sccp_indicate(const sccp_device_t * const device, sccp_channel_t * const 
 						d->protocol->sendDialedNumber(d, lineInstance, c->callid, c->dialedNumber);
 					}
 					iCallInfo.Send(ci, c->callid, c->calltype, lineInstance, device, d->earlyrtp == SCCP_EARLYRTP_IMMEDIATE ? TRUE : FALSE);
-					sccp_device_sendcallstate(d, lineInstance, c->callid, SKINNY_CALLSTATE_PROCEED, SKINNY_CALLPRIORITY_LOW, SKINNY_CALLINFO_VISIBILITY_DEFAULT);
 				}
-				if (c->previousChannelState == SCCP_CHANNELSTATE_RINGOUT) {
-					break;
-				}
-				sccp_device_sendcallstate(d, lineInstance, c->callid, SKINNY_CALLSTATE_RINGOUT, SKINNY_CALLPRIORITY_NORMAL, SKINNY_CALLINFO_VISIBILITY_DEFAULT);
+				sccp_device_sendcallstate(d, lineInstance, c->callid, SKINNY_CALLSTATE_PROCEED, SKINNY_CALLPRIORITY_LOW, SKINNY_CALLINFO_VISIBILITY_DEFAULT);
 				sccp_dev_displayprompt(d, lineInstance, c->callid, SKINNY_DISP_RING_OUT, GLOB(digittimeout));
-
 				sccp_dev_stoptone(d, lineInstance, c->callid);
 				if (d->earlyrtp <= SCCP_EARLYRTP_RINGOUT && c->rtp.audio.receiveChannelState == SCCP_RTP_STATUS_INACTIVE) {
 					sccp_channel_openReceiveChannel(c);
@@ -173,6 +168,12 @@ void __sccp_indicate(const sccp_device_t * const device, sccp_channel_t * const 
 
 				sccp_dev_set_keyset(d, lineInstance, c->callid, KEYMODE_RINGOUT);
 				iCallInfo.Send(ci, c->callid, c->calltype, lineInstance, device, FALSE);
+			}
+			break;
+		case SCCP_CHANNELSTATE_RINGOUT_CALLINFO:
+			{
+				sccp_device_sendcallstate(d, lineInstance, c->callid, SKINNY_CALLSTATE_RINGOUT, SKINNY_CALLPRIORITY_NORMAL, SKINNY_CALLINFO_VISIBILITY_DEFAULT);
+				iCallInfo.Send(ci, c->callid, c->calltype, lineInstance, device, TRUE);
 			}
 			break;
 		case SCCP_CHANNELSTATE_RINGING:
