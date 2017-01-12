@@ -567,6 +567,10 @@ static int sccp_wrapper_asterisk112_indicate(PBX_CHANNEL_TYPE * ast, int ind, co
 				// Allow signalling of RINGOUT only on outbound calls.
 				// Otherwise, there are some issues with late arrival of ringing
 				// indications on ISDN calls (chan_lcr, chan_dahdi) (-DD).
+
+				// send PROCEED now, prepare for AST_CONTROL_CONNECTED_LINE
+				// which will push the actual RINGOUT indication
+				sccp_indicate(d, c, SCCP_CHANNELSTATE_PROCEED);
 				if (d->earlyrtp == SCCP_EARLYRTP_IMMEDIATE) {
 					/* 
 					 * Redial button isnt't working properly in immediate mode, because the
@@ -580,7 +584,6 @@ static int sccp_wrapper_asterisk112_indicate(PBX_CHANNEL_TYPE * ast, int ind, co
 					}
 					sccp_wrapper_asterisk112_setDialedNumber(c, c->dialedNumber);
 				}
-				sccp_indicate(d, c, SCCP_CHANNELSTATE_RINGOUT);
 				iPbx.set_callstate(c, AST_STATE_RING);
 
 				struct ast_channel_iterator *iterator = ast_channel_iterator_all_new();
@@ -681,13 +684,13 @@ static int sccp_wrapper_asterisk112_indicate(PBX_CHANNEL_TYPE * ast, int ind, co
 			break;
 
 		case AST_CONTROL_CONNECTED_LINE:
-			/* remarking out this code, as it is causing issues with callforward + FREEPBX,  the calling party will not hear the remote end ringing
-			 this patch was added to suppress 'double callwaiting tone', but channel PROD(-1) below is taking care of that already
-			*/
-			//if (c->calltype == SKINNY_CALLTYPE_OUTBOUND && c->rtp.audio.receiveChannelState == SCCP_RTP_STATUS_INACTIVE && c->state > SCCP_CHANNELSTATE_DIALING) {
-			//	sccp_channel_openReceiveChannel(c);
-			//}
 			sccp_asterisk_connectedline(c, data, datalen);
+			if (	SKINNY_CALLTYPE_OUTBOUND == c->calltype &&
+				SCCP_CHANNELSTATE_RINGOUT == c->previousChannelState &&
+				SCCP_CHANNELSTATE_PROCEED == c->state
+			) {
+				sccp_indicate(d, c, SCCP_CHANNELSTATE_RINGOUT);
+			}
 			res = 0;
 			break;
 
