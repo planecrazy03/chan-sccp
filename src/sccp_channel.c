@@ -1912,10 +1912,8 @@ void __sccp_channel_destroy(sccp_channel_t * channel)
 void sccp_channel_transfer(channelPtr channel, constDevicePtr device)
 {
 	uint8_t prev_channel_state = 0;
-	uint32_t blindTransfer = 0;
 	uint16_t instance = 0;
-	PBX_CHANNEL_TYPE *pbx_channel_owner = NULL;
-	PBX_CHANNEL_TYPE *pbx_channel_bridgepeer = NULL;
+	int res = -1;
 
 	if (!channel) {
 		return;
@@ -1927,125 +1925,113 @@ void sccp_channel_transfer(channelPtr channel, constDevicePtr device)
 		return;
 	}
 
-	AUTO_RELEASE(sccp_device_t, d , sccp_channel_getDevice(channel));
-
-	if (!d) {
-		/* transfer was pressed on first (transferee) channel, check if is our transferee channel and continue with d <= device */
-		if (channel == device->transferChannels.transferee && device->transferChannels.transferer) {
-			d = sccp_device_retain(device);
-		} else if (channel->state == SCCP_CHANNELSTATE_HOLD) {
-			if (SCCP_LIST_GETSIZE(&channel->line->devices) == 1) {
+	do {
+		AUTO_RELEASE(sccp_device_t, d , sccp_channel_getDevice(channel));
+		if (!d) {
+			// transfer was pressed on first (transferee) channel, check if is our transferee channel and continue with d <= device
+			if (channel == device->transferChannels.transferee && device->transferChannels.transferer) {
 				d = sccp_device_retain(device);
+			} else if (channel->state == SCCP_CHANNELSTATE_HOLD) {
+				if (SCCP_LIST_GETSIZE(&channel->line->devices) == 1) {
+					d = sccp_device_retain(device);
+				} else {
+					pbx_log(LOG_WARNING, "%s: The channel %s is not attached to a particular device (hold on shared line, resume first)\n", DEV_ID_LOG(device), channel->designator);
+					instance = sccp_device_find_index_for_line(device, channel->line->name);
+					sccp_dev_displayprompt(device, instance, channel->callid, SKINNY_DISP_NO_LINE_TO_TRANSFER, GLOB(digittimeout));
+					break;
+				}
 			} else {
-				pbx_log(LOG_WARNING, "%s: The channel %s is not attached to a particular device (hold on shared line, resume first)\n", DEV_ID_LOG(device), channel->designator);
+				pbx_log(LOG_WARNING, "%s: The channel %s state is unclear. giving up\n", DEV_ID_LOG(device), channel->designator);
 				instance = sccp_device_find_index_for_line(device, channel->line->name);
 				sccp_dev_displayprompt(device, instance, channel->callid, SKINNY_DISP_NO_LINE_TO_TRANSFER, GLOB(digittimeout));
-				return;
-			}
-		} else {
-			pbx_log(LOG_WARNING, "%s: The channel %s state is unclear. giving up\n", DEV_ID_LOG(device), channel->designator);
-			instance = sccp_device_find_index_for_line(device, channel->line->name);
-			sccp_dev_displayprompt(device, instance, channel->callid, SKINNY_DISP_NO_LINE_TO_TRANSFER, GLOB(digittimeout));
-			return;
-		}
-	}
-	instance = sccp_device_find_index_for_line(d, channel->line->name);
-
-	if (!d->transfer || !channel->line->transfer) {
-		sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Transfer disabled on device or line\n", d->id);
-		sccp_dev_displayprompt(device, instance, channel->callid, SKINNY_DISP_KEY_IS_NOT_ACTIVE, GLOB(digittimeout));
-		return;
-	}
-
-	/* are we in the middle of a transfer? */
-	if (d->transferChannels.transferee && d->transferChannels.transferer) {
-		sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: In the middle of a Transfer. Going to transfer completion\n", d->id);
-		sccp_channel_transfer_complete(d->transferChannels.transferer);
-		return;
-	}
-	/* exceptional case, we need to release half transfer before retaking, should never occur */
-	/* \todo check out if this should be reactiveated or removed */
-	// if (d->transferChannels.transferee && !d->transferChannels.transferer) {
-	// sccp_channel_release(&d->transferChannels.transferee);						/* explicit release */
-	// }
-	if (!d->transferChannels.transferee && d->transferChannels.transferer) {
-		sccp_channel_release(&d->transferChannels.transferer);						/* explicit release */
-	}
-
-	if ((d->transferChannels.transferee = sccp_channel_retain(channel))) {					/** channel to be transfered */
-		sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Transfer request from line channel %s\n", d->id, channel->designator);
-
-		prev_channel_state = channel->state;
-
-		if (channel->state == SCCP_CHANNELSTATE_HOLD) {							/* already put on hold manually */
-			channel->channelStateReason = SCCP_CHANNELSTATEREASON_TRANSFER;
-			// sccp_indicate(d, channel, SCCP_CHANNELSTATE_HOLD);                      		/* do we need to reindicate ? */
-		}
-		if ((channel->state != SCCP_CHANNELSTATE_OFFHOOK && channel->state != SCCP_CHANNELSTATE_HOLD && channel->state != SCCP_CHANNELSTATE_CALLTRANSFER)) {
-			channel->channelStateReason = SCCP_CHANNELSTATEREASON_TRANSFER;
-
-			if (!sccp_channel_hold(channel)) {							/* hold failed, restore */
-				channel->channelStateReason = SCCP_CHANNELSTATEREASON_NORMAL;
-				sccp_channel_release(&d->transferChannels.transferee);				/* explicit release */
-				return;
+				break;
 			}
 		}
+		if (!d) {
+			pbx_log(LOG_WARNING, "%s: Failed to retain device for transfer\n", channel->designator);
+			break;
+		}
+		instance = sccp_device_find_index_for_line(d, channel->line->name);
 
-		if ((pbx_channel_owner = pbx_channel_ref(channel->owner))) {
-			if (channel->state != SCCP_CHANNELSTATE_CALLTRANSFER) {
-				sccp_indicate(d, channel, SCCP_CHANNELSTATE_CALLTRANSFER);
+		if (!d->transfer || !channel->line->transfer) {
+			sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Transfer disabled on device or line\n", d->id);
+			sccp_dev_displayprompt(device, instance, channel->callid, SKINNY_DISP_KEY_IS_NOT_ACTIVE, GLOB(digittimeout));
+			break;
+		}
+
+		// are we in the middle of a transfer?
+		if (d->transferChannels.transferee && d->transferChannels.transferer) {
+			sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: In the middle of a Transfer. Going to transfer completion\n", d->id);
+			sccp_channel_transfer_complete(d->transferChannels.transferer);
+			break;
+		}
+
+		// exceptional case, we need to release half transfer before retaking, should never occur
+		if (!d->transferChannels.transferee && d->transferChannels.transferer) {
+			sccp_channel_release(&d->transferChannels.transferer);						// explicit release
+		}
+
+		// setup a new transfer
+		if ((d->transferChannels.transferee = sccp_channel_retain(channel))) {					// channel to be transfered
+			sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Transfer request from line channel %s\n", d->id, channel->designator);
+			prev_channel_state = channel->state;
+
+			if (channel->state == SCCP_CHANNELSTATE_HOLD) {							// already put on hold manually
+				channel->channelStateReason = SCCP_CHANNELSTATEREASON_TRANSFER;
 			}
-			AUTO_RELEASE(sccp_channel_t, sccp_channel_new , sccp_channel_newcall(channel->line, d, NULL, SKINNY_CALLTYPE_OUTBOUND, pbx_channel_owner, NULL));
 
-			if (sccp_channel_new && (pbx_channel_bridgepeer = iPbx.get_bridged_channel(pbx_channel_owner))) {
-				pbx_builtin_setvar_helper(sccp_channel_new->owner, "TRANSFEREE", pbx_channel_name(pbx_channel_bridgepeer));
-
-				sccp_dev_set_keyset(d, instance, channel->callid, KEYMODE_OFFHOOKFEAT);
-
-				/* set a var for BLINDTRANSFER. It will be removed if the user manually answers the call Otherwise it is a real BLINDTRANSFER */
-#if 0
-				if (blindTransfer || (sccp_channel_new && sccp_channel_new->owner && pbx_channel_owner && pbx_channel_bridgepeer)) {
-					//! \todo use pbx impl
-					pbx_builtin_setvar_helper(sccp_channel_new->owner, "BLINDTRANSFER", pbx_channel_name(pbx_channel_bridgepeer));
-					pbx_builtin_setvar_helper(pbx_channel_bridgepeer, "BLINDTRANSFER", pbx_channel_name(sccp_channel_new->owner));
+			if ((channel->state != SCCP_CHANNELSTATE_OFFHOOK && channel->state != SCCP_CHANNELSTATE_HOLD && channel->state != SCCP_CHANNELSTATE_CALLTRANSFER)) {
+				channel->channelStateReason = SCCP_CHANNELSTATEREASON_TRANSFER;
+				if (!sccp_channel_hold(channel)) {							// hold failed, restore
+					channel->channelStateReason = SCCP_CHANNELSTATEREASON_NORMAL;
+					sccp_channel_release(&d->transferChannels.transferee);				// explicit release
+					break;
 				}
-#else
-				if (blindTransfer || (sccp_channel_new && sccp_channel_new->owner && pbx_channel_owner && pbx_channel_bridgepeer)) {
-					pbx_builtin_setvar_helper(sccp_channel_new->owner, "BLINDTRANSFER", pbx_channel_name(channel->owner));
+			}
+			PBX_CHANNEL_TYPE *pbx_channel_owner = pbx_channel_ref(channel->owner);
+			if (pbx_channel_owner) {
+				if (channel->state != SCCP_CHANNELSTATE_CALLTRANSFER) {
+					sccp_indicate(d, channel, SCCP_CHANNELSTATE_CALLTRANSFER);
 				}
-#endif
-				// should go on, even if there is no bridged channel (yet/anymore) ?
-				d->transferChannels.transferer = sccp_channel_retain(sccp_channel_new);
-				pbx_channel_unref(pbx_channel_bridgepeer);
-			} else if (sccp_channel_new && (pbx_channel_appl(pbx_channel_owner) != NULL)) {
-				// giving up
-				sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_DEVICE + DEBUGCAT_LINE)) (VERBOSE_PREFIX_3 "%s: Cannot transfer a dialplan application, bridged channel is required on %s\n", d->id, channel->designator);
-				sccp_dev_displayprompt(d, instance, channel->callid, SKINNY_DISP_CAN_NOT_COMPLETE_TRANSFER, SCCP_DISPLAYSTATUS_TIMEOUT);
-				channel->channelStateReason = SCCP_CHANNELSTATEREASON_NORMAL;
-				sccp_indicate(d, channel, SCCP_CHANNELSTATE_CONGESTION);
-				sccp_channel_release(&d->transferChannels.transferee);				/* explicit release */
-			} else {
-				// giving up
-				if (!sccp_channel_new) {
-					sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_DEVICE + DEBUGCAT_LINE)) (VERBOSE_PREFIX_3 "%s: New channel could not be created to complete transfer for %s\n", d->id, channel->designator);
+				// create a new channel
+				AUTO_RELEASE(sccp_channel_t, sccp_channel_new , sccp_channel_newcall(channel->line, d, NULL, SKINNY_CALLTYPE_OUTBOUND, pbx_channel_owner, NULL));
+				if (sccp_channel_new) {
+					PBX_CHANNEL_TYPE *pbx_channel_bridgepeer = iPbx.get_bridged_channel(pbx_channel_owner);
+					if (pbx_channel_bridgepeer) {
+						pbx_builtin_setvar_helper(sccp_channel_new->owner, "TRANSFEREE", pbx_channel_name(pbx_channel_bridgepeer));
+
+						sccp_dev_set_keyset(d, instance, channel->callid, KEYMODE_OFFHOOKFEAT);
+
+						// set a var for BLINDTRANSFER. It will be removed if the user manually answers the call Otherwise it is a real BLINDTRANSFER
+						if (sccp_channel_new && sccp_channel_new->owner && pbx_channel_owner && pbx_channel_bridgepeer) {
+							pbx_builtin_setvar_helper(sccp_channel_new->owner, "_BLINDTRANSFER", pbx_channel_name(channel->owner));
+						}
+						// should go on, even if there is no bridged channel (yet/anymore) ?
+						d->transferChannels.transferer = sccp_channel_retain(sccp_channel_new);
+						pbx_channel_unref(pbx_channel_bridgepeer);
+						res = 0;
+					} else if (pbx_channel_appl(pbx_channel_owner) != NULL) {
+						pbx_log(LOG_WARNING, "%s: Cannot transfer a dialplan application, bridged channel is required on %s\n", d->id, channel->designator);
+					} else {
+						pbx_log(LOG_WARNING, "%s: No bridged channel or application on %s\n", d->id, channel->designator);
+					}
 				} else {
-					sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_DEVICE + DEBUGCAT_LINE)) (VERBOSE_PREFIX_3 "%s: No bridged channel or application on %s\n", d->id, channel->designator);
+					pbx_log(LOG_WARNING, "%s: New channel could not be created to complete transfer for %s\n", d->id, channel->designator);
 				}
-				sccp_dev_displayprompt(d, instance, channel->callid, SKINNY_DISP_CAN_NOT_COMPLETE_TRANSFER, SCCP_DISPLAYSTATUS_TIMEOUT);
-				channel->channelStateReason = SCCP_CHANNELSTATEREASON_NORMAL;
-				sccp_indicate(d, channel, SCCP_CHANNELSTATE_CONGESTION);
-				sccp_channel_release(&d->transferChannels.transferee);				/* explicit release */
+				pbx_channel_unref(pbx_channel_owner);
+			} else {
+				pbx_log(LOG_WARNING, "%s: No pbx channel owner to transfer %s\n", d->id, channel->designator);
 			}
-			pbx_channel_owner = pbx_channel_unref(pbx_channel_owner);
-		} else {
-			// giving up
-			sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_DEVICE + DEBUGCAT_LINE)) (VERBOSE_PREFIX_3 "%s: No pbx channel owner to transfer %s\n", d->id, channel->designator);
+			if (res) {
+				sccp_channel_release(&d->transferChannels.transferee);					// explicit release
+			}
+		}
+		if (res) {
 			sccp_dev_displayprompt(d, instance, channel->callid, SKINNY_DISP_CAN_NOT_COMPLETE_TRANSFER, SCCP_DISPLAYSTATUS_TIMEOUT);
 			channel->channelStateReason = SCCP_CHANNELSTATEREASON_NORMAL;
-			sccp_indicate(d, channel, prev_channel_state);
-			sccp_channel_release(&d->transferChannels.transferee);					/* explicit release */
+			sccp_indicate(d, channel, SCCP_CHANNELSTATE_CONGESTION);
 		}
-	}
+	} while(0);
 }
 
 /*!
@@ -2059,10 +2045,10 @@ void sccp_channel_transfer_release(devicePtr d, channelPtr c)
 
 	if ((d->transferChannels.transferee && c == d->transferChannels.transferee) || (d->transferChannels.transferer && c == d->transferChannels.transferer)) {
 		if (d->transferChannels.transferee) {
-			sccp_channel_release(&d->transferChannels.transferee);					/* explicit release */
+			sccp_channel_release(&d->transferChannels.transferee);						// explicit release
 		}
 		if (d->transferChannels.transferer) {
-			sccp_channel_release(&d->transferChannels.transferer);					/* explicit release */
+			sccp_channel_release(&d->transferChannels.transferer);						// explicit release
 		}
 		sccp_log_and((DEBUGCAT_CHANNEL + DEBUGCAT_HIGH)) (VERBOSE_PREFIX_3 "%s: Transfer on the channel %s released\n", d->id, c->designator);
 	}
@@ -2096,7 +2082,7 @@ void sccp_channel_transfer_cancel(devicePtr d, channelPtr c)
 			enum ast_control_transfer control_transfer_message = AST_TRANSFER_FAILED;
 			iPbx.queue_control_data(c->owner, AST_CONTROL_TRANSFER, &control_transfer_message, sizeof(control_transfer_message));
 #endif
-			sccp_channel_transfer_release(d, transferee);			/* explicit release */
+			sccp_channel_transfer_release(d, transferee);							// explicit release
 		} else {
 			pbx_log(LOG_WARNING, "%s: (sccp_channel_transfer_cancel) Could not retain the transferee channel, giving up.\n", d->id);
 		}
@@ -2182,13 +2168,13 @@ void sccp_channel_transfer_complete(channelPtr sccp_destination_local_channel)
 		char calling_number[StationMaxDirnumSize] = {0}, called_number[StationMaxDirnumSize] = {0}, orig_number[StationMaxDirnumSize] = {0};
 		char calling_name[StationMaxNameSize] = {0}, called_name[StationMaxNameSize] = {0}, orig_name[StationMaxNameSize] = {0};
 
+		// retrieve callinfo from source and destination
 		iCallInfo.Getter(sccp_channel_getCallInfo(sccp_destination_local_channel), 
 			SCCP_CALLINFO_CALLINGPARTY_NAME, &calling_name,
 			SCCP_CALLINFO_CALLINGPARTY_NUMBER, &calling_number,
 			SCCP_CALLINFO_CALLEDPARTY_NAME, &called_name,
 			SCCP_CALLINFO_CALLEDPARTY_NUMBER, &called_number,
 			SCCP_CALLINFO_KEY_SENTINEL);
-
 		if (sccp_source_local_channel->calltype == SKINNY_CALLTYPE_INBOUND) {
 			iCallInfo.Getter(sccp_channel_getCallInfo(sccp_source_local_channel), 
 				SCCP_CALLINFO_CALLINGPARTY_NAME, &orig_name,
@@ -2200,62 +2186,53 @@ void sccp_channel_transfer_complete(channelPtr sccp_destination_local_channel)
 				SCCP_CALLINFO_CALLEDPARTY_NUMBER, &orig_number,
 				SCCP_CALLINFO_KEY_SENTINEL);
 		}
-
-		/* update our source part */
+		// update our source part
 		iCallInfo.Setter(sccp_channel_getCallInfo(sccp_source_local_channel), 
 			SCCP_CALLINFO_LAST_REDIRECTINGPARTY_NAME, calling_name,
 			SCCP_CALLINFO_LAST_REDIRECTINGPARTY_NUMBER, calling_number,
+			SCCP_CALLINFO_LAST_REDIRECT_REASON, 4,
 			SCCP_CALLINFO_KEY_SENTINEL);
 		sccp_channel_display_callInfo(sccp_source_local_channel);
 
-		/* update our destination part */
+		// update our destination part
 		iCallInfo.Setter(sccp_channel_getCallInfo(sccp_destination_local_channel), 
 			SCCP_CALLINFO_LAST_REDIRECTINGPARTY_NAME, calling_name,
 			SCCP_CALLINFO_LAST_REDIRECTINGPARTY_NUMBER, calling_number,
+			SCCP_CALLINFO_LAST_REDIRECT_REASON, 4,
 			SCCP_CALLINFO_KEY_SENTINEL);
 		sccp_destination_local_channel->calltype = SKINNY_CALLTYPE_FORWARD;
 		sccp_channel_display_callInfo(sccp_destination_local_channel);
 
-		/* update transferee */
+		// update transferee
 		iPbx.set_connected_line(sccp_source_local_channel, called_number, called_name, connectedLineUpdateReason);
-#if ASTERISK_VERSION_GROUP > 106										/*! \todo change to SCCP_REASON Codes, using mapping table */
 		if (iPbx.sendRedirectedUpdate) {
 			iPbx.sendRedirectedUpdate(sccp_source_local_channel, calling_number, calling_name, called_number, called_name, AST_REDIRECTING_REASON_UNCONDITIONAL);
 		}
-#endif
-		/* update ring-in channel directly */
+		// update ring-in channel directly
 		iPbx.set_connected_line(sccp_destination_local_channel, orig_number, orig_name, connectedLineUpdateReason);
-#if ASTERISK_VERSION_GROUP > 106										/*! \todo change to SCCP_REASON Codes, using mapping table */
-//		if (iPbx.sendRedirectedUpdate) {
-//			iPbx.sendRedirectedUpdate(sccp_destination_local_channel, calling_number, calling_name, called_number, called_name, AST_REDIRECTING_REASON_UNCONDITIONAL);
-//		}
-#endif
 	}
 
 	if (sccp_destination_local_channel->state == SCCP_CHANNELSTATE_RINGOUT) {
 		sccp_log((DEBUGCAT_CHANNEL + DEBUGCAT_CORE)) (VERBOSE_PREFIX_3 "%s: Blind transfer. Signalling ringing state to %s\n", d->id, pbx_channel_name(pbx_source_remote_channel));
-		pbx_indicate(pbx_source_remote_channel, AST_CONTROL_RINGING);					// Shouldn't this be ALERTING?
-
-		sccp_log((DEBUGCAT_CHANNEL)) (VERBOSE_PREFIX_3 "SCCP: (Ringing within Transfer %s)\n", pbx_channel_name(pbx_source_remote_channel));
-		sccp_log((DEBUGCAT_CHANNEL)) (VERBOSE_PREFIX_3 "SCCP: (Transfer destination %s)\n", pbx_channel_name(pbx_destination_local_channel));
-
 		if (GLOB(blindtransferindication) == SCCP_BLINDTRANSFER_RING) {
 			sccp_log((DEBUGCAT_CHANNEL)) (VERBOSE_PREFIX_3 "SCCP: (sccp_channel_transfer_complete) Send ringing indication to %s\n", pbx_channel_name(pbx_source_remote_channel));
 			pbx_indicate(pbx_source_remote_channel, AST_CONTROL_RINGING);
 		} else if (GLOB(blindtransferindication) == SCCP_BLINDTRANSFER_MOH) {
 			sccp_log((DEBUGCAT_CHANNEL)) (VERBOSE_PREFIX_3 "SCCP: (sccp_channel_transfer_complete) Started music on hold for channel %s\n", pbx_channel_name(pbx_source_remote_channel));
-			iPbx.moh_start(pbx_source_remote_channel, NULL, NULL);					//! \todo use pbx impl
+			iPbx.moh_start(pbx_source_remote_channel, NULL, NULL);
 		}
+		sccp_log((DEBUGCAT_CHANNEL)) (VERBOSE_PREFIX_3 "SCCP: (Ringing during Transfer %s)\n", pbx_channel_name(pbx_source_remote_channel));
+		sccp_log((DEBUGCAT_CHANNEL)) (VERBOSE_PREFIX_3 "SCCP: (Transfer destination %s)\n", pbx_channel_name(pbx_destination_local_channel));
 	}
 
-	sccp_channel_transfer_release(d, d->transferChannels.transferee);					/* explicit release */
+	sccp_channel_transfer_release(d, d->transferChannels.transferee);						// explicit release
 	if (!iPbx.attended_transfer(sccp_destination_local_channel, sccp_source_local_channel)) {
 		pbx_log(LOG_WARNING, "SCCP: Failed to masquerade %s into %s\n", pbx_channel_name(pbx_destination_local_channel), pbx_channel_name(pbx_source_remote_channel));
 		goto EXIT;
 	}
 	
 	if (GLOB(transfer_tone) && sccp_destination_local_channel->state == SCCP_CHANNELSTATE_CONNECTED) {
-		/* while connected not all the tones can be played */
+		// while connected not all the tones can be played
 		sccp_dev_starttone(d, GLOB(autoanswer_tone), instance, sccp_destination_local_channel->callid, SKINNY_TONEDIRECTION_USER);
 	}
 
